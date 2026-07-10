@@ -1,0 +1,24 @@
+{
+  "gcode_folder": "C:/Users/drudi/Dropbox/Daria-Computer/Queen/Lab/Projects/Microdroplet/Images",
+  "combo_folder": "C:/Users/drudi/Dropbox/Daria-Computer/Queen/Lab/Projects/Microdroplet/Images",
+  "csv_path": "",
+  "pfd_dwell": 3.2,
+  "organic_dwell": 0.4,
+  "pause": 0.5,
+  "repeats": 10,
+  "feedrate": 2000,
+  "cnc_port": "COM3",
+  "pump_port": "COM4",
+  "cnc_baud": "115200",
+  "pump_baud": "115200",
+  "max_rate_x": 2000.0,
+  "max_rate_y": 500.0,
+  "max_rate_z": 500.0,
+  "accel_x": 10.0,
+  "accel_y": 10.0,
+  "accel_z": 10.0,
+  "plate_presets": {
+    "geometry": {},
+    "reactions": {}
+  }
+}
