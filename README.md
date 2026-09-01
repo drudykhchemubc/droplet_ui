@@ -19,6 +19,7 @@ monitoring the run live.
 - The code tells you which droplet # it is currently in the process of making & provides a time estimate to completion (useful for longer runs)
 - The time estimate is based on the dwell time & CNC speed settings
 - New progress bar (with % progress)
+- You can also upload your own 'loading image' by uploading them into the `loading_images_git` folder. The code randomly picks one if there are multiple images in this folder. Currently there is only one (Creative Commons) image in there. Feel free to remove it if it bothers you too. 
 
 ## 1. Quick start (experienced coders)
 
