@@ -1,0 +1,6 @@
+{
+  "wells": {
+    "0,0": {"chemical_name": "Perfluorodecalin", "class": "pfd"},
+    "0,1": {"chemical_name": "Organic Solvent", "class": "organic"}
+  }
+}

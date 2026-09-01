@@ -1,0 +1,13 @@
+{
+  "pfd_dwell": 3.2,
+  "organic_dwell": 0.4,
+  "pause": 0.5,
+  "repeats": 10,
+  "feedrate": 2000,
+  "max_rate_x": 2000.0,
+  "max_rate_y": 500.0,
+  "max_rate_z": 500.0,
+  "accel_x": 10.0,
+  "accel_y": 10.0,
+  "accel_z": 10.0
+}
