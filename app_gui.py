@@ -729,17 +729,21 @@ class MicrodropletApp:
             self._log(f"G-code error: {e}")
             return
 
-        gcode_saved = self._autosave(
-            content='\n'.join(self.gcode_lines),
-            folder_var=self.gcode_folder_var,
-            csv_path=csv_path,
-            suffix='',
-            ext='txt',
-            prompt_title="Choose folder to save G-code",
-        )
-        if gcode_saved:
-            self.gcode_path_var.set(gcode_saved)
-            self._log(f"G-code saved: {gcode_saved}")
+        try:
+            gcode_saved = self._autosave(
+                content='\n'.join(self.gcode_lines),
+                folder_var=self.gcode_folder_var,
+                csv_path=csv_path,
+                suffix='',
+                ext='txt',
+                prompt_title="Choose folder to save G-code",
+            )
+            if gcode_saved:
+                self.gcode_path_var.set(gcode_saved)
+                self._log(f"G-code saved: {gcode_saved}")
+        except Exception as e:
+            messagebox.showerror("Save Error", f"Could not save G-code file:\n{e}")
+            self._log(f"G-code save error: {e}")
 
         try:
             combo_df = self.screen.get_combinations_df()
@@ -767,6 +771,15 @@ class MicrodropletApp:
 
     def _autosave(self, content, folder_var, csv_path, suffix, ext, prompt_title):
         folder = folder_var.get()
+        if folder:
+            try:
+                os.makedirs(folder, exist_ok=True)
+            except OSError as e:
+                # Saved folder (e.g. synced in from another computer's config)
+                # doesn't resolve on this machine — fall through and re-prompt
+                # instead of crashing silently.
+                self._log(f"  saved output folder unusable ({e}) — please choose a new one")
+                folder = ''
         if not folder:
             folder = filedialog.askdirectory(title=prompt_title)
             if not folder:
@@ -774,7 +787,7 @@ class MicrodropletApp:
                 return None
             folder_var.set(folder)
             self._save_config()
-        os.makedirs(folder, exist_ok=True)
+            os.makedirs(folder, exist_ok=True)
         date = datetime.date.today().strftime('%b-%d-%Y')
         base = os.path.splitext(os.path.basename(csv_path))[0]
         filename = f"{base}{suffix} {date}.{ext}"
