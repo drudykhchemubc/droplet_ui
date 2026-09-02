@@ -1,4 +1,4 @@
-pandas
-pyserial
-matplotlib
-Pillow
+pandas >= 2.3.3
+pyserial >= 3.5
+matplotlib >= 3.10.0
+Pillow >= 11.1.0
