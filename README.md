@@ -162,6 +162,11 @@ pip install -r requirements.txt
 
 This installs `pandas`, `pyserial`, `matplotlib`, and `Pillow` - the
 libraries the app depends on beyond what Python already includes. If this doesn't work, you can also try installing them each separately.
+Just make sure that the versions are:
+pandas >= 2.3.3
+pyserial >= 3.5
+matplotlib >= 3.10.0
+Pillow >= 11.1.0
 
 ### Step 7 - Run the app (still in terminal)
 
