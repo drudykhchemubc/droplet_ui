@@ -17,6 +17,7 @@ from gcode_generator import Screen
 from cnc_hardware import cnc_connect, cnc_send, pump_connect
 from plate_editor import PlateEditor
 from animated_tab_design import SmoothNotebook
+from calibration import CncLink, JogControls, MotorWiringDialog
 from time_estimate import format_estimate, parse_move, segment_time
 
 try:
@@ -183,9 +184,9 @@ class MicrodropletApp:
 
         s.configure('TSeparator', background=C['border'])
 
-        s.configure('TScrollbar', background=C['fill2'], troughcolor=C['fill'],
-                    borderwidth=0, arrowsize=0, relief='flat')
-        s.map('TScrollbar', background=[('active', C['text2'])])
+        s.configure('TScrollbar', background=C['text2'], troughcolor=C['bg'],
+                    borderwidth=0, arrowsize=0, relief='flat', width=14)
+        s.map('TScrollbar', background=[('active', '#636366')])
 
     def _make_scrollable(self, parent):
         """Return a scrollable inner frame. Pack all tab content into it."""
@@ -247,9 +248,11 @@ class MicrodropletApp:
         nb.add(cfg_host, text="Configure")
         self._build_configure_tab(cfg_host)
 
-        run = ttk.Frame(nb._body, padding=(16, 12))
-        nb.add(run, text="Run")
+        run_host = ttk.Frame(nb._body)
+        nb.add(run_host, text="Run")
+        run, run_canvas = self._make_scrollable(run_host)
         self._build_run_tab(run)
+        self._bind_scroll(run, run_canvas)
 
     def _bind_scroll(self, widget, canvas):
         """Recursively bind mousewheel on all children to scroll the canvas."""
@@ -276,8 +279,12 @@ class MicrodropletApp:
 
         left_inner, left_canvas = self._make_scrollable(left_host)
         self._build_left_controls(left_inner, left_canvas)
+        # Let the mouse wheel scroll the left panel no matter which child
+        # widget (entry, label, etc.) the cursor happens to be over.
+        self._bind_scroll(left_inner, left_canvas)
 
-        self.plate_editor = PlateEditor(right_host, self._C, log_cb=self._log)
+        self.plate_editor = PlateEditor(right_host, self._C, log_cb=self._log,
+                                        repeats_var=self.repeats_var)
         self.plate_editor.pack(fill=tk.BOTH, expand=True)
 
     def _build_left_controls(self, parent, scroll_canvas=None):
@@ -429,22 +436,37 @@ class MicrodropletApp:
             anchor='w', pady=(0, 6))
         ctrl = ttk.LabelFrame(parent, text="", padding=(14, 10))
         ctrl.pack(fill=tk.X, pady=(0, 14))
-        self.zero_btn = ttk.Button(ctrl, text="Zero CNC (G92)", command=self._zero_cnc)
-        self.zero_btn.pack(side=tk.LEFT, padx=(0, 8))
-        self.start_btn = ttk.Button(ctrl, text="▶  Start", style='Accent.TButton',
-                                    command=self._start_run, state='disabled')
-        self.start_btn.pack(side=tk.LEFT, padx=(0, 8))
-        self.pause_btn = ttk.Button(ctrl, text="⏸  Pause",
-                                    command=self._toggle_pause, state='disabled')
-        self.pause_btn.pack(side=tk.LEFT, padx=(0, 8))
-        self.stop_btn = ttk.Button(ctrl, text="⏹  Stop", style='Danger.TButton',
-                                   command=self._stop_run, state='disabled')
-        self.stop_btn.pack(side=tk.LEFT)
+
+        self._cnc_link = CncLink(
+            get_cnc=lambda: self.cnc, log_cb=self._log,
+            is_busy=lambda: str(self.stop_btn['state']) == 'normal')
+        self._jog = JogControls(ctrl, self._C, self._cnc_link)
+        self._jog.pack(anchor='w')
+
+        # Zero centred under the round pad; Calibrate under the step / jog speed labels
+        self.zero_btn = ttk.Button(self._jog, text="Zero CNC (G92)", style='Ghost.TButton',
+                                   command=self._zero_cnc)
+        self.zero_btn.grid(row=1, column=0, pady=(10, 0))
+        ttk.Button(self._jog.options, text="Calibrate…", style='Ghost.TButton',
+                   command=self._open_calibration).grid(row=2, column=0, sticky='w',
+                                                        pady=(12, 0))
+        self.root.after_idle(self._even_controls_spacing, ctrl)
 
         ttk.Label(parent, text="PROGRESS", style='Status.TLabel').pack(
             anchor='w', pady=(0, 6))
         prog = ttk.LabelFrame(parent, text="", padding=(14, 12))
         prog.pack(fill=tk.X)
+        run_row = ttk.Frame(prog, style='Surface.TFrame')
+        run_row.pack(anchor='w', pady=(0, 12))
+        self.start_btn = ttk.Button(run_row, text="▶  Start", style='Accent.TButton',
+                                    command=self._start_run, state='disabled')
+        self.start_btn.pack(side=tk.LEFT, padx=(0, 8))
+        self.pause_btn = ttk.Button(run_row, text="⏸  Pause",
+                                    command=self._toggle_pause, state='disabled')
+        self.pause_btn.pack(side=tk.LEFT, padx=(0, 8))
+        self.stop_btn = ttk.Button(run_row, text="⏹  Stop", style='Danger.TButton',
+                                   command=self._stop_run, state='disabled')
+        self.stop_btn.pack(side=tk.LEFT)
         ttk.Label(prog, textvariable=self.progress_label_var,
                   style='Card.TLabel').pack(anchor='w', pady=(0, 6))
         self.progress_bar = ttk.Progressbar(prog, variable=self.progress_var)
@@ -862,6 +884,23 @@ class MicrodropletApp:
         self._log("Devices disconnected.")
 
     # ── Run handlers ───────────────────────────────────────────────────────────
+
+    def _even_controls_spacing(self, ctrl):
+        """Pad below the Zero button so the CONTROLS card has the same white space
+        under the jog pad as above it (the top gap depends on DPI scaling)."""
+        ctrl.update_idletasks()
+        jog, pad, zero = self._jog, self._jog._pad, self.zero_btn
+        top = jog.winfo_y() + pad.winfo_y()
+        bottom = ctrl.winfo_height() - (jog.winfo_y() + zero.winfo_y() + zero.winfo_height())
+        if top > bottom:
+            zero.grid_configure(pady=(10, top - bottom))
+
+    def _open_calibration(self):
+        dlg = getattr(self, '_calib_dlg', None)
+        if dlg is not None and dlg.winfo_exists():
+            dlg.lift()
+            return
+        self._calib_dlg = MotorWiringDialog(self.root, self._C, self._cnc_link, self._jog)
 
     def _zero_cnc(self):
         if self.cnc is None:

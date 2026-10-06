@@ -9,7 +9,9 @@ from tkinter import ttk, messagebox, filedialog, simpledialog, colorchooser
 
 import pandas as pd
 
+from animated_tab_design import PillToggle
 from dropdown_autocomplete import bind_typeahead
+from gcode_generator import Screen
 
 PLATE_DEFAULTS = {
     '6':   {'rows': 2,  'cols': 3,  'spacing': 35.0},
@@ -134,10 +136,28 @@ def _migrate_legacy_presets():
 _migrate_legacy_presets()
 
 
+def _is_aux_class(cls_str):
+    """True for carrier / marker / wash classes, which Screen leaves out of the combinations."""
+    cls = (cls_str or '').lower()
+    return any(k in cls for k in Screen._SKIP)
+
+
+def _is_carrier_class(cls_str):
+    cls = (cls_str or '').lower()
+    return any(k in cls for k in ('pfd', 'perfluorodecalin', 'oil'))
+
+
+def _infer_role(wells, cls, exclude=None):
+    """'varied' if another well already uses this class, else 'fixed'."""
+    others = sum(1 for k, d in wells.items()
+                 if k != exclude and (d.get('class') or '').strip() == cls)
+    return 'varied' if cls and others else 'fixed'
+
+
 class _WellDialog(tk.Toplevel):
     """Modal dialog to assign or clear a single well."""
 
-    def __init__(self, parent, well_name, data):
+    def __init__(self, parent, style_colors, well_name, data, used_classes=(), role='fixed'):
         super().__init__(parent)
         self.result = None  # None=cancelled, {}=cleared, dict=saved
         self.title(f"Well {well_name}")
@@ -154,13 +174,29 @@ class _WellDialog(tk.Toplevel):
 
         ttk.Label(f, text="Class:").grid(row=1, column=0, sticky='e', padx=(0, 8), pady=5)
         self._cls = tk.StringVar(value=data.get('class', ''))
-        cls_cb = ttk.Combobox(f, textvariable=self._cls, width=20,
-                              values=[label for label, _keys in _LEGEND_GROUPS])
+        # Each distinct class is one reagent slot in Screen's combination product,
+        # so offer the classes already on the plate. No typeahead here: it would
+        # overwrite custom class names (e.g. "photocatalyst" -> "PFD / Oil").
+        presets = [label for label, _keys in _LEGEND_GROUPS]
+        extra = sorted({c for c in used_classes if c and c not in presets}, key=str.lower)
+        cls_cb = ttk.Combobox(f, textvariable=self._cls, width=20, values=presets + extra)
         cls_cb.grid(row=1, column=1, sticky='w')
-        bind_typeahead(cls_cb)
+
+        ttk.Label(f, text="Role:").grid(row=2, column=0, sticky='e', padx=(0, 8), pady=5)
+        self._role = tk.StringVar(value=role)
+        self._role_toggle = PillToggle(f, style_colors,
+                                       [("Fixed", 'fixed'), ("Varied", 'varied')], self._role)
+        self._role_toggle.grid(row=2, column=1, sticky='w', pady=5)
+
+        # A fixed well's class follows its name until the class is edited separately.
+        name, cls = self._name_var.get().strip(), self._cls.get().strip()
+        self._cls_linked = cls in ('', name)
+        self._name_var.trace_add('write', lambda *_: self._on_name_change())
+        self._cls.trace_add('write', lambda *_: self._on_class_change())
+        self._update_role_state()
 
         bf = ttk.Frame(f)
-        bf.grid(row=2, column=0, columnspan=2, pady=(12, 0))
+        bf.grid(row=3, column=0, columnspan=2, pady=(12, 0))
         ttk.Button(bf, text="Clear",  command=self._clear).pack(side='left', padx=(0, 6))
         ttk.Button(bf, text="Cancel", command=self.destroy).pack(side='left', padx=(0, 6))
         ttk.Button(bf, text="Save", style='Accent.TButton',
@@ -172,10 +208,36 @@ class _WellDialog(tk.Toplevel):
         self.geometry(f'+{px}+{py}')
         self.wait_window()
 
+    def _on_name_change(self):
+        if self._cls_linked and self._role.get() == 'fixed':
+            self._cls.set(self._name_var.get().strip())
+
+    def _on_class_change(self):
+        cls = self._cls.get().strip()
+        self._cls_linked = cls in ('', self._name_var.get().strip())
+        self._update_role_state()
+
+    def _update_role_state(self):
+        # carrier / marker / wash wells aren't part of the reactions
+        self._role_toggle.set_enabled(not _is_aux_class(self._cls.get()))
+
     def _save(self):
         name = self._name_var.get().strip()
         if name:
-            self.result = {'chemical_name': name, 'class': self._cls.get().strip()}
+            cls = self._cls.get().strip()
+            result = {'chemical_name': name, 'class': cls}
+            if not _is_aux_class(cls):
+                role = self._role.get()
+                if role == 'varied' and not cls:
+                    messagebox.showwarning(
+                        "Class Needed",
+                        "Give a varied reagent a Class (e.g. \"photocatalyst\").\n\n",
+                        parent=self)
+                    return
+                if role == 'fixed' and not cls:
+                    result['class'] = name
+                result['role'] = role
+            self.result = result
         self.destroy()
 
     def _clear(self):
@@ -337,14 +399,15 @@ class PlateEditor(ttk.Frame):
     _MARGIN = 1    # outer padding around the well grid (canvas coords)
     _GAP    = 1    # white gap between adjacent cells (pixels)
 
-    def __init__(self, parent, style_colors, log_cb=None):
+    def __init__(self, parent, style_colors, log_cb=None, repeats_var=None):
         super().__init__(parent)
         self._C   = style_colors
         self._log = log_cb or (lambda _: None)
+        self._repeats_var = repeats_var
 
         self._rows = 16
         self._cols = 24
-        self._wells: dict = {}   # (ri, ci) → {'chemical_name', 'class'}
+        self._wells: dict = {}   # (ri, ci) → {'chemical_name', 'class', 'role'}
         self._zoom = 1.0
         self._resize_job = None
         self._cv_w = 0
@@ -354,6 +417,9 @@ class PlateEditor(ttk.Frame):
 
         self._build_controls()
         self._build_canvas()
+        if repeats_var is not None:
+            repeats_var.trace_add('write', lambda *_: self._refresh_summary())
+        self._refresh_summary()
 
     # ── controls ───────────────────────────────────────────────────────────────
 
@@ -435,10 +501,19 @@ class PlateEditor(ttk.Frame):
         self._refresh_rxn_cb()
 
     def _build_canvas(self):
+        C = self._C
+
+        # packed first (bottom) so the expanding plate area can't squeeze it out
+        summ = ttk.LabelFrame(self, text="SCREEN SUMMARY", padding=(10, 6))
+        summ.pack(side='bottom', fill='x', padx=8, pady=(0, 8))
+        self._summary_body = tk.Frame(summ, bg=C['surface'])
+        self._summary_body.pack(fill='x')
+        self._summary_body.columnconfigure(1, weight=1)
+        self._summary_body.bind('<Configure>', self._rewrap_summary)
+        self._wrap_labels = []
+
         body = ttk.Frame(self)
         body.pack(fill='both', expand=True, padx=8, pady=(0, 8))
-
-        C = self._C
 
         # ── three-canvas spreadsheet layout ──────────────────────────────────
         # grid:  col0=row-letters  col1=wells(expand)  col2=v-scrollbar
@@ -678,6 +753,7 @@ class PlateEditor(ttk.Frame):
                                font=font, fill='#555', anchor='center')
 
         # square cells — white canvas background shows through as gap lines
+        varied = self._screen_summary()['varied_wells']
         for ri in range(rows):
             for ci in range(cols):
                 x0 = M + ci * cell
@@ -688,6 +764,11 @@ class PlateEditor(ttk.Frame):
                 cv.create_rectangle(x0, y0, x1, y1,
                                     fill=color, outline='',
                                     tags=(f'w{ri}_{ci}',))
+                if (ri, ci) in varied:
+                    # dark inset border marks wells that change between reactions
+                    bw = max(1.5, cell * 0.08)
+                    cv.create_rectangle(x0 + bw / 2, y0 + bw / 2, x1 - bw / 2, y1 - bw / 2,
+                                        outline='#1D1D1F', width=bw)
 
     # ── interaction ────────────────────────────────────────────────────────────
 
@@ -720,7 +801,11 @@ class PlateEditor(ttk.Frame):
         if ri is None:
             return
         name = string.ascii_uppercase[ri] + str(ci + 1)
-        dlg  = _WellDialog(self.winfo_toplevel(), name, self._wells.get((ri, ci), {}))
+        used = {(d.get('class') or '').strip() for d in self._wells.values()}
+        data = self._wells.get((ri, ci), {})
+        role = data.get('role') or _infer_role(
+            self._wells, (data.get('class') or '').strip(), exclude=(ri, ci))
+        dlg  = _WellDialog(self.winfo_toplevel(), self._C, name, data, used, role)
         if dlg.result is None:
             return
         if dlg.result:
@@ -760,6 +845,10 @@ class PlateEditor(ttk.Frame):
                                    parent=self.winfo_toplevel())
             return
         entry = self._wells.setdefault((ri, ci), {'class': ''})
+        # a fixed well whose class is just its name keeps the two in sync
+        if (entry.get('role') != 'varied' and not _is_aux_class(entry.get('class'))
+                and (entry.get('class') or '').strip() in ('', current.strip())):
+            entry['class'] = new_name
         entry['chemical_name'] = new_name
         self._redraw()
         self._refresh_legend()
@@ -855,6 +944,164 @@ class PlateEditor(ttk.Frame):
             tk.Label(row, text=label, bg=self._C['surface'],
                      font=('Segoe UI', 9)).pack(side='left')
 
+        self._refresh_summary()
+
+    # ── screen summary ─────────────────────────────────────────────────────────
+
+    def _screen_summary(self):
+        """Mirror Screen.initialize(): one reaction per pick of one well from each
+        reagent class. Classes with one well are fixed, classes with more are varied."""
+        groups = {}     # exact class string → [(key, well)] (Screen groups case-sensitively)
+        carriers = []
+        for key, d in sorted(self._wells.items()):
+            cls = (d.get('class') or '').strip()
+            if _is_aux_class(cls):
+                if _is_carrier_class(cls):
+                    carriers.append(d.get('chemical_name', ''))
+                continue
+            groups.setdefault(cls, []).append((key, d))
+
+        fixed  = {c: m for c, m in groups.items() if len(m) == 1}
+        varied = {c: m for c, m in groups.items() if len(m) > 1}
+        reactions = 1
+        for members in groups.values():
+            reactions *= len(members)
+
+        # errors stop Screen.generate_gcode(); warnings only flag a likely setup mistake
+        errors, warnings = [], []
+        if self._wells and not carriers:
+            errors.append(
+                "No carrier well is assigned. Assign at least one well to the "
+                "class \"PFD / Oil\".")
+        for cls, members in fixed.items():
+            d = members[0][1]
+            if d.get('role') == 'varied':
+                warnings.append(
+                    f"\"{d.get('chemical_name', '')}\" is set to Varied, but it is the only "
+                    f"well in the class \"{cls}\", so it will be included in every reaction. "
+                    f"Assign the same class to each alternative reagent, or set this well "
+                    f"to Fixed.")
+        for cls, members in varied.items():
+            n = len(members)
+            marked_fixed = [d.get('chemical_name', '') for _k, d in members
+                            if d.get('role') == 'fixed']
+            if marked_fixed:
+                quoted = ', '.join(f'"{m}"' for m in marked_fixed)
+                warnings.append(
+                    f"The class \"{cls}\" contains {n} wells, so each will be used in a "
+                    f"separate reaction ({n} reactions). However, {quoted} "
+                    f"{'is' if len(marked_fixed) == 1 else 'are'} set to Fixed. To include "
+                    f"a reagent in every reaction, assign it a class of its own.")
+            names = [d.get('chemical_name', '') for _k, d in members]
+            for dup in sorted({nm for nm in names if names.count(nm) > 1}):
+                warnings.append(
+                    f"The name \"{dup}\" is used for {names.count(dup)} wells in the class "
+                    f"\"{cls}\". These reactions will be listed identically in the "
+                    f"combinations CSV. Give each well a distinct name "
+                    f"(e.g. \"{dup}1\", \"{dup}2\").")
+        by_lower = {}
+        for cls in groups:
+            by_lower.setdefault(cls.lower(), []).append(cls)
+        for spellings in by_lower.values():
+            if len(spellings) > 1:
+                quoted = ' and '.join(f'"{sp}"' for sp in spellings)
+                warnings.append(
+                    f"The classes {quoted} differ only in capitalization and will be "
+                    f"treated as separate classes.")
+
+        return {
+            'carriers': carriers, 'fixed': fixed, 'varied': varied,
+            'reactions': reactions if groups else 0,
+            'varied_wells': {k for m in varied.values() for k, _d in m},
+            'errors': errors, 'warnings': warnings,
+        }
+
+    def _refresh_summary(self):
+        body = getattr(self, '_summary_body', None)
+        if body is None:
+            return
+        for w in body.winfo_children():
+            w.destroy()
+        self._wrap_labels = []
+
+        C = self._C
+        F = 'Segoe UI'
+        if not self._wells:
+            tk.Label(body, text="Click a well to assign a chemical.", bg=C['surface'],
+                     fg=C['text2'], font=(F, 9)).grid(row=0, column=0, sticky='w')
+            return
+
+        s = self._screen_summary()
+
+        def well_label(d, cls):
+            name = d.get('chemical_name', '')
+            return name if cls == name else f"{name} ({cls})"
+
+        lines = [("Carrier", ', '.join(s['carriers']) or "none")]
+        lines.append(("Fixed", '  ·  '.join(
+            well_label(m[0][1], c) for c, m in s['fixed'].items()) or "none"))
+        if s['varied']:
+            for i, (cls, members) in enumerate(s['varied'].items()):
+                names = ', '.join(d.get('chemical_name', '') for _k, d in members)
+                lines.append(("Varied" if i == 0 else "",
+                              f"{cls}:  {names}   (×{len(members)})"))
+        else:
+            lines.append(("Varied", "none — every droplet is the same reaction"))
+
+        r = 0
+        for label, text in lines:
+            tk.Label(body, text=label, bg=C['surface'], fg=C['text2'],
+                     font=(F, 9, 'bold')).grid(row=r, column=0, sticky='nw', padx=(0, 12))
+            tk.Label(body, text=text, bg=C['surface'], fg=C['text'], font=(F, 9),
+                     justify='left', wraplength=700).grid(row=r, column=1, sticky='w')
+            r += 1
+
+        try:
+            repeats = int(self._repeats_var.get()) if self._repeats_var is not None else None
+        except (tk.TclError, ValueError):
+            repeats = None
+        n = s['reactions']
+        sizes = [len(m) for m in s['varied'].values()]
+        total = f"{' × '.join(map(str, sizes))} = " if len(sizes) > 1 else ""
+        total += f"{n} reaction{'' if n == 1 else 's'}"
+        if repeats is not None:
+            total += f"  ×  {repeats} repeats  =  {n * repeats} droplets"
+        ttk.Separator(body, orient='horizontal').grid(
+            row=r, column=0, columnspan=2, sticky='ew', pady=4)
+        tk.Label(body, text=total, bg=C['surface'], fg=C['accent'],
+                 font=(F, 10, 'bold')).grid(row=r + 1, column=0, columnspan=2, sticky='w')
+        r += 2
+
+        banners = [
+            (s['errors'], "G-code cannot be generated until the following is resolved:",
+             '#FDECEA', '#B3261E'),
+            (s['warnings'], "Please review. G-code can still be generated:",
+             '#FFF4CE', '#7A5A00'),
+        ]
+        for msgs, title, bg, fg in banners:
+            if not msgs:
+                continue
+            box = tk.Frame(body, bg=bg, padx=10, pady=6)
+            box.grid(row=r, column=0, columnspan=2, sticky='ew', pady=(6, 0))
+            tk.Label(box, text=f"⚠  {title}", bg=bg, fg=fg, font=(F, 9, 'bold'),
+                     anchor='w').pack(fill='x')
+            for msg in msgs:
+                lbl = tk.Label(box, text=f"•  {msg}", bg=bg, fg=fg, font=(F, 9),
+                               justify='left', anchor='w')
+                lbl.pack(fill='x', padx=(14, 0), pady=(2, 0))
+                self._wrap_labels.append(lbl)
+            r += 1
+        self._rewrap_summary()
+
+    def _rewrap_summary(self, _e=None):
+        """Wrap warning text to the summary panel's current width."""
+        width = self._summary_body.winfo_width()
+        if width < 50:
+            return
+        for lbl in self._wrap_labels:
+            if lbl.winfo_exists():
+                lbl.configure(wraplength=width - 50)
+
     # ── CSV import / export ────────────────────────────────────────────────────
 
     def _import_csv(self):
@@ -888,6 +1135,9 @@ class PlateEditor(ttk.Frame):
                         str(color)) if pd.notna(color) else None
                     if norm:
                         entry['color'] = norm
+                    role = str(row.get('role', '')).strip().lower()
+                    if role in ('fixed', 'varied'):
+                        entry['role'] = role
                     self._wells[(ri, ci)] = entry
             self._redraw()
             self._refresh_legend()
@@ -910,14 +1160,20 @@ class PlateEditor(ttk.Frame):
 
     def _build_rows(self):
         rows = []
+        varied = self._screen_summary()['varied_wells']
         for (ri, ci), d in sorted(self._wells.items()):
             x = self._ox_var.get() + ci * self._sx_var.get()
             y = self._oy_var.get() + ri * self._sy_var.get()
+            if _is_aux_class(d.get('class', '')):
+                role = 'carrier' if _is_carrier_class(d.get('class', '')) else 'other'
+            else:
+                role = 'varied' if (ri, ci) in varied else 'fixed'
             rows.append({
                 'plate_row':     string.ascii_uppercase[ri],
                 'plate_column':  ci + 1,
                 'chemical_name': d.get('chemical_name', ''),
                 'class':         d.get('class', ''),
+                'role':          role,
                 'color':         d.get('color', ''),
                 'x':             round(x, 4),
                 'y':             round(y, 4),

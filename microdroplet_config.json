@@ -6,8 +6,8 @@
   "pause": 0.5,
   "repeats": 10,
   "feedrate": 2000,
-  "cnc_port": "COM3",
-  "pump_port": "COM4",
+  "cnc_port": "SIMULATE",
+  "pump_port": "SIMULATE",
   "cnc_baud": "115200",
   "pump_baud": "115200",
   "max_rate_x": 2000.0,
@@ -16,5 +16,7 @@
   "accel_x": 10.0,
   "accel_y": 10.0,
   "accel_z": 10.0,
-  "settings_preset": "default"
+  "settings_preset": "default",
+  "gcode_folder": "c:\\Users\\drudi\\Dropbox\\Daria-Computer\\Queen\\Lab\\Projects\\Microdroplet\\Code\\microdroplet_app\\gcode_output",
+  "combo_folder": "c:\\Users\\drudi\\Dropbox\\Daria-Computer\\Queen\\Lab\\Projects\\Microdroplet\\Code\\microdroplet_app\\gcode_output\\combinations"
 }
