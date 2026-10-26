@@ -283,11 +283,11 @@ class JogControls(tk.Frame):
             return 1000
 
     def jog(self, axis, delta):
-        self._link.send(self, [f"$J=G91 G21 {axis}{delta:.3f} F{self._feed()}"])
+        self._link.send(self, [f"G91 G21 {axis}{delta:.3f} F{self._feed()}"])
 
     def go_home(self):
         f = self._feed()
-        self._link.send(self, [f"$J=G90 G21 Z0 F{f}", f"$J=G90 G21 X0 Y0 F{f}"])
+        self._link.send(self, [f"G90 G21 Z0 F{f}", f"G90 G21 X0 Y0 F{f}"])
 
 
 class MotorWiringDialog(tk.Toplevel):
